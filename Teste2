@@ -1,0 +1,68 @@
+package com.example.keycloak;
+
+import org.keycloak.authentication.Authenticator;
+import org.keycloak.authentication.AuthenticatorFactory;
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.provider.ProviderConfigProperty;
+import org.keycloak.provider.ProviderConfigurationBuilder;
+
+import java.util.List;
+
+public class CustomGroupAuthenticatorFactory implements AuthenticatorFactory {
+
+    private static final String PROVIDER_ID = "custom-group-authenticator";
+
+    @Override
+    public String getId() {
+        return PROVIDER_ID;
+    }
+
+    @Override
+    public Authenticator create(KeycloakSession session) {
+        return new CustomGroupAuthenticator();
+    }
+
+    @Override
+    public String getDisplayType() {
+        return "Custom Group Authenticator with API";
+    }
+
+    @Override
+    public boolean isUserSetupAllowed() {
+        return false;
+    }
+
+    @Override
+    public List<ProviderConfigProperty> getConfigProperties() {
+        return ProviderConfigurationBuilder.create()
+            .property()
+                .name("tokenEndpoint")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .label("Token Endpoint")
+                .helpText("URL para obter o token da API")
+                .defaultValue("https://api.example.com/token")
+                .add()
+            .property()
+                .name("apiEndpoint")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .label("API Endpoint")
+                .helpText("URL para buscar os grupos de usuário")
+                .defaultValue("https://api.example.com/groups")
+                .add()
+            .property()
+                .name("clientId")
+                .type(ProviderConfigProperty.STRING_TYPE)
+                .label("Client ID")
+                .helpText("Client ID para a autenticação com a API")
+                .defaultValue("client-id")
+                .add()
+            .property()
+                .name("clientSecret")
+                .type(ProviderConfigProperty.PASSWORD)
+                .label("Client Secret")
+                .helpText("Client Secret para a autenticação com a API")
+                .defaultValue("client-secret")
+                .add()
+            .build();
+    }
+}
