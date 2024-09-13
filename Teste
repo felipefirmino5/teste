@@ -1,0 +1,200 @@
+package com.example.keycloak;
+
+import org.keycloak.authentication.AuthenticationFlowContext;
+import org.keycloak.authentication.Authenticator;
+import org.keycloak.models.UserModel;
+import org.keycloak.models.RealmModel;
+import org.keycloak.provider.ProviderConfigProperty;
+import org.keycloak.sessions.AuthenticationSessionModel;
+
+import javax.ws.rs.client.Client;
+import javax.ws.rs.client.ClientBuilder;
+import javax.ws.rs.client.WebTarget;
+import javax.ws.rs.core.Form;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+
+public class CustomGroupAuthenticator implements Authenticator {
+
+    // Cache para armazenar tokens
+    private static final ConcurrentHashMap<String, CachedToken> tokenCache = new ConcurrentHashMap<>();
+
+    @Override
+    public void authenticate(AuthenticationFlowContext context) {
+        UserModel user = context.getUser();
+        RealmModel realm = context.getRealm();
+        AuthenticationSessionModel authSession = context.getAuthenticationSession();
+
+        // Obter os parâmetros de configuração
+        String tokenEndpoint = context.getAuthenticatorConfig().getConfig().get("tokenEndpoint");
+        String apiEndpoint = context.getAuthenticatorConfig().getConfig().get("apiEndpoint");
+        String clientId = context.getAuthenticatorConfig().getConfig().get("clientId");
+        String clientSecret = context.getAuthenticatorConfig().getConfig().get("clientSecret");
+
+        try {
+            // 1. Obter o token da API (com cache)
+            String token = getApiTokenWithCache(tokenEndpoint, clientId, clientSecret);
+
+            // 2. Fazer a chamada à API para buscar os grupos
+            List<String> groups = fetchGroupsFromApi(apiEndpoint, token, user.getUsername(), tokenEndpoint, clientId, clientSecret);
+
+            // 3. Adicionar os grupos ao usuário ou ao token JWT
+            for (String group : groups) {
+                if (realm.getRole(group) != null) {
+                    user.grantRole(realm.getRole(group));
+                }
+            }
+
+            // Prosseguir com a autenticação
+            context.success();
+        } catch (Exception e) {
+            // Caso haja erro, falhar a autenticação
+            context.failureChallenge(AuthenticationFlowError.INTERNAL_ERROR, context.form().setError("Error obtaining groups from API").createErrorPage(Response.Status.INTERNAL_SERVER_ERROR));
+        }
+    }
+
+    /**
+     * Método para obter o token com cache. Verifica se o token está em cache e ainda é válido.
+     * Se estiver, retorna o token em cache; caso contrário, faz uma nova requisição.
+     */
+    private String getApiTokenWithCache(String tokenEndpoint, String clientId, String clientSecret) throws Exception {
+        // Verificar se o token está em cache e ainda é válido
+        CachedToken cachedToken = tokenCache.get(tokenEndpoint);
+
+        if (cachedToken != null && cachedToken.isValid()) {
+            return cachedToken.getToken();  // Retornar token em cache
+        }
+
+        // Se o token não estiver em cache ou expirado, obter um novo
+        String newToken = getApiToken(tokenEndpoint, clientId, clientSecret);
+        
+        // Cachear o token com o tempo de expiração
+        long expiresIn = extractTokenExpiry(newToken);  // Exemplo: extrair o tempo de expiração do token
+        tokenCache.put(tokenEndpoint, new CachedToken(newToken, System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(expiresIn)));
+
+        return newToken;
+    }
+
+    /**
+     * Método para obter um token da API usando client_credentials.
+     */
+    private String getApiToken(String tokenEndpoint, String clientId, String clientSecret) throws Exception {
+        Client client = ClientBuilder.newClient();
+        WebTarget target = client.target(tokenEndpoint);
+
+        Form form = new Form();
+        form.param("grant_type", "client_credentials");
+        form.param("client_id", clientId);
+        form.param("client_secret", clientSecret);
+
+        String response = target.request(MediaType.APPLICATION_JSON_TYPE)
+                .post(javax.ws.rs.client.Entity.form(form), String.class);
+
+        // Extrair o token do JSON de resposta
+        return extractTokenFromResponse(response);
+    }
+
+    /**
+     * Método auxiliar para fazer a chamada à API de grupos usando o token.
+     * Se o token estiver expirado (401 Unauthorized), renova o token e tenta novamente.
+     */
+    private List<String> fetchGroupsFromApi(String apiEndpoint, String token, String username, String tokenEndpoint, String clientId, String clientSecret) throws Exception {
+        Client client = ClientBuilder.newClient();
+        WebTarget target = client.target(apiEndpoint).queryParam("username", username);
+
+        Response response = target.request(MediaType.APPLICATION_JSON_TYPE)
+                .header("Authorization", "Bearer " + token)
+                .get();
+
+        if (response.getStatus() == 401) {
+            // Token expirado ou inválido, renovar o token
+            token = getApiToken(tokenEndpoint, clientId, clientSecret);
+
+            // Atualizar o cache com o novo token
+            long expiresIn = extractTokenExpiry(token);
+            tokenCache.put(tokenEndpoint, new CachedToken(token, System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(expiresIn)));
+
+            // Tentar novamente a chamada à API com o novo token
+            response = target.request(MediaType.APPLICATION_JSON_TYPE)
+                    .header("Authorization", "Bearer " + token)
+                    .get();
+        }
+
+        // Se ainda for 401 após a renovação do token, falhar
+        if (response.getStatus() == 401) {
+            throw new Exception("Unauthorized - Token renewal failed");
+        }
+
+        // Parsear a resposta para obter os grupos
+        String responseBody = response.readEntity(String.class);
+        return parseGroupsFromResponse(responseBody);
+    }
+
+    // Métodos auxiliares para parsing de token e grupos
+    private String extractTokenFromResponse(String response) {
+        // Lógica para extrair o token do JSON retornado
+        // Pode usar uma biblioteca como Gson ou Jackson
+        return "extracted_token";  // Exemplo simplificado
+    }
+
+    private long extractTokenExpiry(String tokenResponse) {
+        // Lógica para extrair o tempo de expiração do token do JSON retornado
+        // Exemplo simplificado (substitua pela lógica real):
+        return 3600;  // Expira em 1 hora (3600 segundos)
+    }
+
+    private List<String> parseGroupsFromResponse(String response) {
+        // Lógica para extrair os grupos do JSON retornado
+        // Pode usar uma biblioteca como Gson ou Jackson
+        return List.of("group1", "group2");  // Exemplo simplificado
+    }
+
+    @Override
+    public void action(AuthenticationFlowContext context) {
+        // Não utilizado neste exemplo
+    }
+
+    @Override
+    public boolean requiresUser() {
+        return true;
+    }
+
+    @Override
+    public boolean configuredFor(KeycloakSession session, RealmModel realm, UserModel user) {
+        return true;
+    }
+
+    @Override
+    public void setRequiredActions(KeycloakSession session, RealmModel realm, UserModel user) {
+        // Não utilizado
+    }
+
+    @Override
+    public void close() {
+        // Fechar recursos, se necessário
+    }
+
+    /**
+     * Classe interna para armazenar tokens em cache.
+     */
+    static class CachedToken {
+        private final String token;
+        private final long expiryTime;
+
+        public CachedToken(String token, long expiryTime) {
+            this.token = token;
+            this.expiryTime = expiryTime;
+        }
+
+        public String getToken() {
+            return token;
+        }
+
+        public boolean isValid() {
+            return System.currentTimeMillis() < expiryTime;
+        }
+    }
+}
